@@ -22,3 +22,40 @@ body,
 .xterm .xterm-viewport {
   background-color: transparent !important;
 }
+
+/* --- Global scrollbar styling -------------------------------------------
+ * Thin, no up/down buttons, near-invisible track, dark thumb that still
+ * contrasts the #1e1e2e background.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #313244 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #313244;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #45475a;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+}
