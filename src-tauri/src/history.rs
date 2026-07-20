@@ -53,14 +53,17 @@ impl History {
             return None;
         }
         let conn = self.conn.lock();
-        let like = format!("{}%", prefix);
+        // Escape special LIKE chars in the prefix FIRST, then append the
+        // unescaped `%` wildcard. (Escaping after appending would escape
+        // the wildcard itself and match literally "prefix%", not "prefix*".)
+        let like = format!("{}%", escape_like(prefix));
         conn.query_row(
             "SELECT command FROM commands
              WHERE command LIKE ?1 ESCAPE '\\'
                AND command != ?2
              ORDER BY last_used_at DESC
              LIMIT 1",
-            params![escape_like(&like), prefix],
+            params![like, prefix],
             |row| row.get::<_, String>(0),
         )
         .ok()

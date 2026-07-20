@@ -159,7 +159,6 @@ export default function App() {
               tabId={tab.id}
               active={tab.id === activeId}
               onCwd={(cwd) => setCwd(tab.id, cwd)}
-              onExit={() => closeTab(tab.id)}
             />
           </div>
         ))}

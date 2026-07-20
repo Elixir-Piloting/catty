@@ -41,6 +41,13 @@ export function onCwdChanged(
   return listen<string>(`cwd-changed:${tabId}`, (e) => cb(e.payload));
 }
 
+export function onPtyRestart(
+  tabId: number,
+  cb: () => void,
+): Promise<UnlistenFn> {
+  return listen<void>(`pty-restart:${tabId}`, () => cb());
+}
+
 export function onPtyExit(
   tabId: number,
   cb: () => void,

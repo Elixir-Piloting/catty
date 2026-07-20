@@ -35,7 +35,7 @@ fn tab_new(app: AppHandle, parent_tab_id: Option<u32>) -> Result<TabInfo, String
     });
 
     let id = state.alloc_id();
-    let session = PtySession::spawn(app.clone(), id, cwd.clone(), &state.hook_path)
+    let session = PtySession::spawn(app.clone(), id, cwd.clone(), state.hook_path.clone())
         .map_err(|e| format!("failed to spawn pty: {e}"))?;
 
     state.sessions.lock().insert(id, Arc::new(session));

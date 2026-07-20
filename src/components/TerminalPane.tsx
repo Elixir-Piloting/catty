@@ -11,6 +11,7 @@ import {
   onCwdChanged,
   onPtyData,
   onPtyExit,
+  onPtyRestart,
   tabInput,
   tabResize,
 } from "../lib/tauri";
@@ -25,7 +26,6 @@ interface TerminalPaneProps {
   tabId: number;
   active: boolean;
   onCwd: (cwd: string) => void;
-  onExit: () => void;
 }
 
 const FONT_FAMILY =
@@ -60,7 +60,6 @@ export default function TerminalPane({
   tabId,
   active,
   onCwd,
-  onExit,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -71,7 +70,13 @@ export default function TerminalPane({
   const matchReqIdRef = useRef(0);
 
   useEffect(() => {
+    console.log(`[catty tab ${tabId}] TerminalPane MOUNT`);
     if (!containerRef.current) return;
+
+    // Suppress clear-screen/scrollback sequences from the new shell's startup
+    // output so xterm.js preserves its buffer across a respawn.
+    let suppressClear = false;
+    let clearSuppressTimer: ReturnType<typeof setTimeout> | null = null;
 
     const term = new XTerm({
       fontFamily: FONT_FAMILY,
@@ -240,8 +245,22 @@ export default function TerminalPane({
     const onDataUnlistenP = onPtyData(tabId, (b64) => {
       try {
         const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        // Detect clear sequences
+        if (bin.includes("\x1b[2J") || bin.includes("\x1b[3J") || bin.includes("\x1bc")) {
+          console.log(`[catty tab ${tabId}] CLEAR SEQ detected in pty-data (len=${bin.length})`);
+        }
+        let cleanBin = bin;
+        if (suppressClear) {
+          // Strip sequences that would clobber the terminal buffer
+          // when a new shell starts after a respawn.
+          cleanBin = cleanBin
+            .replace(/\x1b\[3J/g, "")   // erase scrollback
+            .replace(/\x1b\[2J/g, "")   // erase display
+            .replace(/\x1bc/g, "")      // RIS (reset)
+            .replace(/\x1b\[H/g, "");   // cursor home (harmless alone but included in clear seqs)
+        }
+        const bytes = new Uint8Array(cleanBin.length);
+        for (let i = 0; i < cleanBin.length; i++) bytes[i] = cleanBin.charCodeAt(i);
         term.write(dec.decode(bytes, { stream: true }));
         // Output may have moved the cursor; reposition overlay.
         requestAnimationFrame(updateOverlay);
@@ -255,8 +274,19 @@ export default function TerminalPane({
       requestAnimationFrame(updateOverlay);
     });
 
+    const onRestartUnlistenP = onPtyRestart(tabId, () => {
+      console.log(`[catty tab ${tabId}] pty-restart event, resetting input line`);
+      lineRef.current = emptyLine();
+      suggestionRef.current = null;
+      suppressClear = true;
+      clearSuppressTimer = setTimeout(() => {
+        suppressClear = false;
+      }, 2000);
+      requestAnimationFrame(updateOverlay);
+    });
+
     const onExitUnlistenP = onPtyExit(tabId, () => {
-      onExit();
+      console.log(`[catty tab ${tabId}] pty-exit event (fatal), not respawning`);
     });
 
     // --- Resize handling ---------------------------------------------------
@@ -276,10 +306,13 @@ export default function TerminalPane({
 
     // --- Cleanup -----------------------------------------------------------
     return () => {
+      console.log(`[catty tab ${tabId}] TerminalPane UNMOUNT`);
+      if (clearSuppressTimer != null) clearTimeout(clearSuppressTimer);
       ro.disconnect();
       disposers.forEach((d) => d());
       onDataUnlistenP.then((u) => u());
       onCwdUnlistenP.then((u) => u());
+      onRestartUnlistenP.then((u) => u());
       onExitUnlistenP.then((u) => u());
       overlay.remove();
       term.dispose();
