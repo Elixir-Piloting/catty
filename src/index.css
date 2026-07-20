@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas,
+    monospace;
+  overflow: hidden;
+}
+
+/* xterm.js base sizing so FitAddon computes correctly */
+.xterm {
+  height: 100%;
+  padding: 4px 6px;
+}
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
