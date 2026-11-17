@@ -73,10 +73,10 @@ export default function TerminalPane({
     console.log(`[catty tab ${tabId}] TerminalPane MOUNT`);
     if (!containerRef.current) return;
 
-    // Suppress clear-screen/scrollback sequences from the new shell's startup
-    // output so xterm.js preserves its buffer across a respawn.
-    let suppressClear = false;
-    let clearSuppressTimer: ReturnType<typeof setTimeout> | null = null;
+    // When the shell outputs a new prompt (detected via \n in PTY data), the
+    // next keystroke starts a fresh command — reset the tracked buffer so we
+    // don't carry junk from a TUI app's interaction into the next input line.
+    let pendingBufferReset = false;
 
     const term = new XTerm({
       fontFamily: FONT_FAMILY,
@@ -125,31 +125,44 @@ export default function TerminalPane({
 
     const updateOverlay = () => {
       const ov = overlayRef.current;
-      const cont = containerRef.current;
       const t = termRef.current;
-      if (!ov || !cont || !t) return;
+      if (!ov || !t) return;
 
       const buffer = lineRef.current.buffer;
       const cursor = lineRef.current.cursor;
       const suffix = ghostSuffix(buffer, suggestionRef.current);
 
-      // Only show when the cursor is at the end of the line.
       if (!suffix || cursor !== buffer.length) {
         ov.style.display = "none";
         return;
       }
 
-      const rowsEl = cont.querySelector<HTMLElement>(".xterm-rows");
-      if (!rowsEl) return;
-      const contRect = cont.getBoundingClientRect();
-      const rowsRect = rowsEl.getBoundingClientRect();
-      const cellW = rowsRect.width / t.cols;
-      const cellH = rowsRect.height / t.rows;
-      const cursorX = t.buffer.active.cursorX;
-      const cursorY = t.buffer.active.cursorY;
+      // Get pixel-accurate cell dimensions — prefer the render-service
+      // measurement, fall back to dividing the element box by cols/rows.
+      let cellW: number, cellH: number;
+      const dims =
+        (t as any)._core?._renderService?.dimensions;
+      if (dims) {
+        cellW = dims.actualCellWidth;
+        cellH = dims.actualCellHeight;
+      } else {
+        const el = t.element;
+        if (!el) { ov.style.display = "none"; return; }
+        cellW = el.clientWidth / t.cols;
+        cellH = el.clientHeight / t.rows;
+      }
 
-      ov.style.left = `${rowsRect.left - contRect.left + cursorX * cellW}px`;
-      ov.style.top = `${rowsRect.top - contRect.top + cursorY * cellH}px`;
+      let cursorX: number, cursorY: number;
+      try {
+        cursorX = t.buffer.active.cursorX;
+        cursorY = t.buffer.active.cursorY;
+      } catch {
+        ov.style.display = "none";
+        return;
+      }
+
+      ov.style.left = `${cursorX * cellW}px`;
+      ov.style.top = `${cursorY * cellH}px`;
       ov.style.maxWidth = `${(t.cols - cursorX) * cellW}px`;
       ov.style.overflow = "hidden";
       ov.textContent = suffix;
@@ -158,19 +171,25 @@ export default function TerminalPane({
 
     const refreshSuggestion = () => {
       const buffer = lineRef.current.buffer;
-      const reqId = ++matchReqIdRef.current;
       if (buffer.length === 0) {
         suggestionRef.current = null;
         updateOverlay();
         return;
       }
+      const reqId = ++matchReqIdRef.current;
       historyMatch(buffer)
         .then((match) => {
           if (reqId !== matchReqIdRef.current) return; // stale
           suggestionRef.current = match;
+          console.log(
+            `[catty tab ${tabId}] historyMatch("${buffer}") => ${match ?? "null"}`,
+            match ? `suffix="${ghostSuffix(buffer, match)}"` : "",
+          );
           updateOverlay();
         })
-        .catch(() => {});
+        .catch((err) => {
+          console.error(`[catty tab ${tabId}] historyMatch error`, err);
+        });
     };
 
     // --- Keystroke handling ------------------------------------------------
@@ -178,6 +197,14 @@ export default function TerminalPane({
 
     disposers.push(
       term.onData((data) => {
+        // If the shell printed a new prompt since the last keystroke, reset
+        // the buffer so leftover junk from a TUI app doesn't pollute tracking.
+        if (pendingBufferReset) {
+          pendingBufferReset = false;
+          lineRef.current = emptyLine();
+          suggestionRef.current = null;
+        }
+
         const res = applyKeystroke(lineRef.current, data);
 
         if (res.rightArrow) {
@@ -231,6 +258,7 @@ export default function TerminalPane({
         lineRef.current = res.state;
 
         if (res.committed) {
+          console.log(`[catty tab ${tabId}] committing buffer="${res.committed}"`);
           historyAdd(res.committed).catch(() => {});
           suggestionRef.current = null;
           updateOverlay();
@@ -245,23 +273,17 @@ export default function TerminalPane({
     const onDataUnlistenP = onPtyData(tabId, (b64) => {
       try {
         const bin = atob(b64);
-        // Detect clear sequences
-        if (bin.includes("\x1b[2J") || bin.includes("\x1b[3J") || bin.includes("\x1bc")) {
-          console.log(`[catty tab ${tabId}] CLEAR SEQ detected in pty-data (len=${bin.length})`);
-        }
-        let cleanBin = bin;
-        if (suppressClear) {
-          // Strip sequences that would clobber the terminal buffer
-          // when a new shell starts after a respawn.
-          cleanBin = cleanBin
-            .replace(/\x1b\[3J/g, "")   // erase scrollback
-            .replace(/\x1b\[2J/g, "")   // erase display
-            .replace(/\x1bc/g, "")      // RIS (reset)
-            .replace(/\x1b\[H/g, "");   // cursor home (harmless alone but included in clear seqs)
-        }
-        const bytes = new Uint8Array(cleanBin.length);
-        for (let i = 0; i < cleanBin.length; i++) bytes[i] = cleanBin.charCodeAt(i);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         term.write(dec.decode(bytes, { stream: true }));
+
+        // Shell output with a newline likely means the prompt was refreshed
+        // (command output, TUI app exit, etc.). Flag the next keystroke to
+        // reset the input-line buffer so we don't carry junk from a TUI app.
+        if (bin.includes("\n")) {
+          pendingBufferReset = true;
+        }
+
         // Output may have moved the cursor; reposition overlay.
         requestAnimationFrame(updateOverlay);
       } catch (err) {
@@ -271,6 +293,10 @@ export default function TerminalPane({
 
     const onCwdUnlistenP = onCwdChanged(tabId, (cwd) => {
       onCwd(cwd);
+      // NOTE: cwd-changed fires on EVERY PSReadLine prompt redraw (every
+      // keystroke during line editing).  Do NOT write \r\n or any other
+      // escape sequence here — it would race with PSReadLine's own cursor
+      // management and cause the prompt/typed-chars to jump to a random row.
       requestAnimationFrame(updateOverlay);
     });
 
@@ -278,10 +304,6 @@ export default function TerminalPane({
       console.log(`[catty tab ${tabId}] pty-restart event, resetting input line`);
       lineRef.current = emptyLine();
       suggestionRef.current = null;
-      suppressClear = true;
-      clearSuppressTimer = setTimeout(() => {
-        suppressClear = false;
-      }, 2000);
       requestAnimationFrame(updateOverlay);
     });
 
@@ -307,7 +329,6 @@ export default function TerminalPane({
     // --- Cleanup -----------------------------------------------------------
     return () => {
       console.log(`[catty tab ${tabId}] TerminalPane UNMOUNT`);
-      if (clearSuppressTimer != null) clearTimeout(clearSuppressTimer);
       ro.disconnect();
       disposers.forEach((d) => d());
       onDataUnlistenP.then((u) => u());
@@ -342,7 +363,7 @@ export default function TerminalPane({
     <div
       ref={containerRef}
       className="h-full w-full"
-      style={{ display: active ? "block" : "none" }}
+      style={{ position: "relative", display: active ? "block" : "none" }}
     />
   );
 }

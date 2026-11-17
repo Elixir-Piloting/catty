@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TerminalPane from "./components/TerminalPane";
 import { tabClose, tabNew } from "./lib/tauri";
 
@@ -48,8 +48,11 @@ export default function App() {
     [],
   );
 
-  // Boot the first tab on mount.
+  // Boot the first tab on mount.  Ref guards against StrictMode double-fire.
+  const bootedRef = useRef(false);
   useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
     openTab().catch((e) => console.error("failed to open initial tab", e));
   }, [openTab]);
 

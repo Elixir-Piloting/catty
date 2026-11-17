@@ -123,6 +123,6 @@ export function applyKeystroke(prev: LineState, data: string): ApplyResult {
 export function ghostSuffix(buffer: string, match: string | null): string | null {
   if (!match) return null;
   if (match.length <= buffer.length) return null;
-  if (!match.startsWith(buffer)) return null;
+  if (!match.toLowerCase().startsWith(buffer.toLowerCase())) return null;
   return match.slice(buffer.length);
 }
